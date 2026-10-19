@@ -146,3 +146,10 @@ mainブランチを持つローカルGitリポジトリを作成し、配布ソ�
 利用者からWindows／AE 26でUIを手動確認し、現時点で問題が見当たらない旨の報告を受けた。自動検証20件の成功とは分けてREADMEへ反映した。Macと他バージョンでの実機検証は未実施のままである。公開前のnpm testで回帰30件、ES3、モジュール一致・import、型検査を通過した。READMEの原文・利用者の報告と照合し、最終稿のハッシュ一致も確認した。追跡対象と既存コミット履歴で参照物を特定する名称の一致がないことを確認した。
 
 GitHubにhttps://github.com/palf-gh/PseudoFXForgeの公開リポジトリを作成し、mainブランチとv0.1.0タグを公開対象とした。依存パッケージ、校正用作業ファイル、FFX、解析用出力は追跡対象に含めていない。
+
+
+### 2026-10-19: GitHub Release v0.1.0
+
+https://github.com/palf-gh/PseudoFXForge/releases/tag/v0.1.0を公開した。既存のv0.1.0タグが指すf1b7806からgit archiveでZIPを生成し、PseudoFXForge-0.1.0.zipとSHA-256ファイルを添付した。ZIPは66508バイトで、SHA-256は91dcf9a89bc0067e39a9c72e22b3e42fbae9ad38911802c5e40f0697463ce9ed。必須ファイル、ZIPの整合性、不要な作業ファイルを含まないことを検査した。アップロード後、両アセットのGitHub上のダイジェストがローカルと一致することを確認した。日英のリリース説明には機能と確認環境を記載した。
+
+リポジトリのトピックにafter-effects、extendscript、pseudo-effects、ffx、typescript、javascriptを設定した。既存のGitタグは変更していない。この公開記録はmainへ追加し、配布ZIPとタグの内容は固定する。
