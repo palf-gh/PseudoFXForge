@@ -1,0 +1,4 @@
+.yomiyasu/
+*.ffx
+artifacts/
+node_modules/

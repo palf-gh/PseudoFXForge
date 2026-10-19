@@ -1,0 +1,11 @@
+{
+  "name": "pseudofxforge-development",
+  "private": true,
+  "scripts": {
+    "test": "node tests/run.cjs && node tests/check-es3.cjs",
+    "check:es3": "node tests/check-es3.cjs"
+  },
+  "devDependencies": {
+    "acorn": "8.15.0"
+  }
+}

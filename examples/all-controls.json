@@ -1,0 +1,21 @@
+{
+  "name": "Forge Controls",
+  "matchName": "Pseudo/Controls",
+  "controls": [
+    { "id": "heading", "name": "Basic controls", "type": "label" },
+    { "id": "amount", "name": "Amount", "type": "slider", "default": 50, "min": 0, "max": 100, "sliderMin": 0, "sliderMax": 100, "precision": 2, "unit": "percent" },
+    { "id": "rotation", "name": "Rotation", "type": "angle", "default": 45 },
+    { "id": "enabled", "name": "Enabled", "type": "checkbox", "default": true },
+    { "id": "tint", "name": "Tint", "type": "colour", "default": [0.2, 0.4, 0.8] },
+    { "id": "position", "name": "Position", "type": "point", "default": [50, 50] },
+    { "id": "position3d", "name": "Position 3D", "type": "point3d", "default": [50, 50, 0] },
+    { "id": "source", "name": "Source layer", "type": "layer", "default": 0 },
+    { "id": "mode", "name": "Mode", "type": "dropdown", "items": ["First", "Second", "Third"], "default": 1 },
+    { "id": "advanced", "name": "Advanced", "type": "group", "open": true, "children": [
+      { "id": "hidden", "name": "Hidden value", "type": "slider", "default": 0, "invisible": true },
+      { "id": "nested", "name": "Nested", "type": "group", "open": false, "children": [
+        { "id": "static", "name": "Static value", "type": "slider", "default": 10, "keyframes": false, "hold": false }
+      ] }
+    ] }
+  ]
+}
