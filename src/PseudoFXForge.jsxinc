@@ -1,7 +1,11 @@
-/* PseudoFXForge | MIT | Copyright (c) 2026 palf-gh */
+/* ============================================================
+ * PseudoFXForge v0.1.0
+ * Copyright (c) 2026 Palf | MIT License
+ * ============================================================ */
 var PseudoFXForge = (function () {
     var VERSION = '0.1.0',
         hasOwn = Object.prototype.hasOwnProperty;
+
     // バイト列の桁重み
     var BINARY = {
         BYTE_BASE: 256,
@@ -69,6 +73,8 @@ var PseudoFXForge = (function () {
     };
     FORMAT.MAX_BASE_MATCH_NAME_LENGTH =
         FORMAT.PSEUDO_MATCH_NAME_MAX - FORMAT.MATCH_SUFFIX_LENGTH - 1;
+
+    // エラーコードと入力位置を付けて例外を投げる。
     function fail(code, message, path) {
         var error = new Error(
             'PseudoFXForge ' + code + ': ' + (path ? path + ': ' : '') + message
@@ -77,12 +83,18 @@ var PseudoFXForge = (function () {
         error.path = path || '';
         throw error;
     }
+
+    // オブジェクト自身が指定キーを持つか判定する。
     function has(object, key) {
         return hasOwn.call(object, key);
     }
+
+    // 値が配列か判定する。
     function array(value) {
         return Object.prototype.toString.call(value) === '[object Array]';
     }
+
+    // 許可された属性以外があれば入力エラーにする。
     function keys(object, allowed, path) {
         var key;
         for (key in object) {
@@ -91,11 +103,15 @@ var PseudoFXForge = (function () {
             }
         }
     }
+
+    // 配列やnullではないオブジェクトか検証する。
     function object(value, path) {
         if (!value || typeof value !== 'object' || array(value)) {
             fail('INPUT', 'Expected an object', path);
         }
     }
+
+    // 空文字列・制御文字・不正なサロゲートを含まない文字列か検証する。
     function text(value, path) {
         var index, codeUnit, nextCodeUnit;
         if (
@@ -122,6 +138,8 @@ var PseudoFXForge = (function () {
         }
         return value;
     }
+
+    // 有限数を検証し、省略時は既定値を返す。
     function number(value, fallback, path) {
         if (typeof value === 'undefined') {
             return fallback;
@@ -131,6 +149,8 @@ var PseudoFXForge = (function () {
         }
         return value;
     }
+
+    // 真偽値を検証し、省略時は既定値を返す。
     function bool(value, fallback, path) {
         if (typeof value === 'undefined') {
             return fallback;
@@ -140,6 +160,8 @@ var PseudoFXForge = (function () {
         }
         return value;
     }
+
+    // 既定値を補完し、指定範囲内の整数か検証する。
     function integer(value, fallback, minimum, maximum, path) {
         value = number(value, fallback, path);
         if (value !== Math.floor(value) || value < minimum || value > maximum) {
@@ -151,14 +173,18 @@ var PseudoFXForge = (function () {
         }
         return value;
     }
-    // JSON入力の解析。
 
+    // evalを使わずJSON文字列を解析する。
     function parseJSON(source) {
         var position = 0,
             depth = 0;
+
+        // JSON構文エラーに現在の読取位置を付ける。
         function error() {
             fail('JSON', 'Invalid JSON at character ' + position);
         }
+
+        // JSONで許される空白を読み飛ばす。
         function skipWhitespace() {
             while (
                 /[\x20\t\r\n]/.test(source.charAt(position)) &&
@@ -167,6 +193,8 @@ var PseudoFXForge = (function () {
                 position++;
             }
         }
+
+        // エスケープを解釈し、JSON文字列を読み取る。
         function parseString() {
             var result = '',
                 character,
@@ -210,6 +238,8 @@ var PseudoFXForge = (function () {
             }
             error();
         }
+
+        // オブジェクト・配列・値を再帰的に読み取る。
         function parseValue() {
             var character, result, key, numberMatch, numericValue;
             skipWhitespace();
@@ -308,6 +338,8 @@ var PseudoFXForge = (function () {
         }
         return result;
     }
+
+    // 文字列をエスケープし、JSONの引用符で囲む。
     function quote(value) {
         return (
             '"' +
@@ -318,6 +350,8 @@ var PseudoFXForge = (function () {
             '"'
         );
     }
+
+    // キー順をそろえ、定義比較用のJSON文字列を作る。
     function canonical(value) {
         var parts = [],
             key,
@@ -350,6 +384,8 @@ var PseudoFXForge = (function () {
         }
         return '{' + parts.join(',') + '}';
     }
+
+    // Unicode文字列をUTF-8のバイト列へ変換する。
     function utf8(value) {
         var result = '',
             index,
@@ -384,15 +420,23 @@ var PseudoFXForge = (function () {
         }
         return result;
     }
+
+    // 下位8ビットをバイナリー書込み用の1文字にする。
     function encodeByte(value) {
         return String.fromCharCode(value & 255);
     }
+
+    // 指定バイト数のゼロ領域を作る。
     function zeros(length) {
         return new Array(length + 1).join('\x00');
     }
+
+    // 整数をビッグエンディアンの2バイト列にする。
     function u16(value) {
         return encodeByte(Math.floor(value / 256)) + encodeByte(value);
     }
+
+    // 整数をビッグエンディアンの4バイト列にする。
     function u32(value) {
         value = value < 0 ? value + BINARY.UINT32_BASE : value;
         return (
@@ -402,6 +446,8 @@ var PseudoFXForge = (function () {
             encodeByte(value)
         );
     }
+
+    // ビッグエンディアンの4バイト列を符号なし整数として読む。
     function read32(bytes, offset) {
         return (
             bytes.charCodeAt(offset) * BINARY.THREE_BYTE_BASE +
@@ -410,6 +456,8 @@ var PseudoFXForge = (function () {
             bytes.charCodeAt(offset + 3)
         );
     }
+
+    // 数値をIEEE 754の32／64ビットのビッグエンディアン列へ変換する。
     function floatBytes(value, bits) {
         var sign = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0,
             absoluteValue = Math.abs(value),
@@ -460,12 +508,18 @@ var PseudoFXForge = (function () {
         lowWord = mantissa % 4294967296;
         return u32(highWord) + u32(lowWord);
     }
+
+    // 数値を単精度浮動小数点の4バイト列にする。
     function f32(value) {
         return floatBytes(value, 32);
     }
+
+    // 数値を倍精度浮動小数点の8バイト列にする。
     function f64(value) {
         return floatBytes(value, 64);
     }
+
+    // UTF-8文字列の長さを検証し、残りをゼロで埋める。
     function fixedString(value, length) {
         value = utf8(value);
         if (value.length >= length) {
@@ -476,6 +530,8 @@ var PseudoFXForge = (function () {
         }
         return value + zeros(length - value.length);
     }
+
+    // バイト列の指定位置を同じ長さのデータで置き換える。
     function replaceBytes(bytes, offset, value) {
         return (
             bytes.substring(0, offset) +
@@ -483,14 +539,18 @@ var PseudoFXForge = (function () {
             bytes.substring(offset + value.length)
         );
     }
+
+    // タグ・データ長・偶数長パディングを付けてRIFXチャンクを作る。
     function chunk(tag, data) {
         return tag + u32(data.length) + data + (data.length % 2 ? '\x00' : '');
     }
+
+    // 種類名と子チャンクをLISTチャンクにまとめる。
     function list(type, data) {
         return chunk('LIST', type + data);
     }
-    // 定義識別子の生成。
 
+    // 定義のバイト列から2系統のハッシュで16桁の識別値を作る。
     function fingerprint(bytes) {
         var firstHash = 2166136261,
             secondHash = 5381,
@@ -524,8 +584,8 @@ var PseudoFXForge = (function () {
         label: 13,
         group: 13
     };
-    // Slider設定の検証。
 
+    // Sliderの範囲・精度・単位を検証し、既定値を補完する。
     function normaliseSlider(control, inputControl, controlPath) {
         control.min = number(inputControl.min, -1000000, controlPath + '.min');
         control.max = number(inputControl.max, 1000000, controlPath + '.max');
@@ -581,7 +641,7 @@ var PseudoFXForge = (function () {
         f32(control.sliderMax);
     }
 
-    // 識別子を短い文字列へ変換。
+    // 16桁の識別値を、matchNameに付ける13桁のBase32へ変換する。
     function matchNameSuffix(hexFingerprint) {
         var alphabet = '0123456789abcdefghijklmnopqrstuv';
         var bits = '0';
@@ -598,7 +658,7 @@ var PseudoFXForge = (function () {
         return suffix;
     }
 
-    // 入力定義の検証。
+    // 入力を検証し、実際のmatchNameとコントロールの参照情報を返す。
     function normalise(data) {
         if (typeof data === 'string') {
             data = parseJSON(data);
@@ -639,6 +699,8 @@ var PseudoFXForge = (function () {
                 '$.matchName'
             );
         }
+
+        // グループを再帰的に検証し、IDの参照表と平坦なプロパティー列を作る。
         function walk(items, path, depth) {
             var result = [],
                 controlIndex,
@@ -907,6 +969,8 @@ var PseudoFXForge = (function () {
             }
             return result;
         }
+
+        // 階層の検証とプロパティー順の確定
         definition.controls = walk(data.controls, '$.controls', 0);
         if (!definition.controls.length) {
             fail('INPUT', 'At least one control is required', '$.controls');
@@ -918,6 +982,8 @@ var PseudoFXForge = (function () {
                 '$.controls'
             );
         }
+
+        // 同じ定義から同じmatchNameを作るための正規化文字列
         serialised = canonical({
             format: FORMAT.ENCODING_VERSION,
             name: definition.name,
@@ -925,10 +991,13 @@ var PseudoFXForge = (function () {
             controls: definition.controls
         });
         definitionHash = fingerprint(utf8(serialised));
+
+        // 定義識別値を付加した実際のmatchName
         definition.matchName =
             definition.baseMatchName + '_' + matchNameSuffix(definitionHash);
         for (var index = 0; index < flatControls.length; index++) {
             if (flatControls[index].id) {
+                // 入力IDからAEの番号・matchNameへの参照表
                 properties[flatControls[index].id] = {
                     index: flatControls[index].index,
                     matchName:
@@ -944,14 +1013,16 @@ var PseudoFXForge = (function () {
         definition.flat = flatControls;
         return definition;
     }
-    // RIFXチャンクの組み立て。
 
+    // 符号付き16.16固定小数点の表現範囲を検証する。
     function validateFixedPoint(value, path) {
         var scaled = Math.round(value * FORMAT.FIXED_POINT_SCALE);
         if (scaled < -2147483648 || scaled > 2147483647) {
             fail('INPUT', 'Value exceeds the 16.16 fixed point range', path);
         }
     }
+
+    // 数値を16.16固定小数点の4バイト列にする。
     function fixedPoint(value) {
         var scaled = Math.round(value * FORMAT.FIXED_POINT_SCALE);
         if (scaled < -2147483648 || scaled > 2147483647) {
@@ -959,12 +1030,15 @@ var PseudoFXForge = (function () {
         }
         return u32(scaled);
     }
+
+    // コントロール型に対応するAEのパラメーター型番号を返す。
     function controlTypeCode(type) {
         if (type === 'root') return 0;
         if (type === 'endgroup') return 14;
         return CONTROL_TYPES[type];
     }
-    // ルートとコントロールの状態を区別する。
+
+    // ルート・補間方法・アニメーション可否から保存状態のフラグを決める。
     function descriptorFlags(type, control) {
         if (type === 'root') return FORMAT.DESCRIPTOR_TIME_SCALE;
         if (
@@ -978,18 +1052,23 @@ var PseudoFXForge = (function () {
             return FORMAT.DESCRIPTOR_HOLD_FLAGS;
         return FORMAT.DESCRIPTOR_ANIMATED_FLAGS;
     }
-    // 値の格納領域を選ぶ。
+
+    // 型ごとに現在値の保存領域サイズを返す。
     function valueByteLength(type) {
         if (type === 'colour') return FORMAT.COLOUR_VALUE_BYTES;
         if (type === 'point') return FORMAT.POINT_VALUE_BYTES;
         if (type === 'point3d') return FORMAT.POINT3D_VALUE_BYTES;
         return FORMAT.SCALAR_VALUE_BYTES;
     }
+
+    // 真偽値の初期値を0／1へ変換し、数値はそのまま返す。
     function scalarDefault(value) {
         if (value === true) return 1;
         if (value === false) return 0;
         return value;
     }
+
+    // 正規化済み定義から、FFXのRIFXバイト列を組み立てる。
     function encode(definition) {
         var propertyPath,
             parameters,
@@ -1002,6 +1081,8 @@ var PseudoFXForge = (function () {
             extraChunks,
             type,
             count = definition.flat.length + 1;
+
+        // ルートまたは連番付きコントロールのtdmnチャンクを作る。
         function propertyId(index) {
             return chunk(
                 'tdmn',
@@ -1011,6 +1092,8 @@ var PseudoFXForge = (function () {
                 )
             );
         }
+
+        // 適用先プロパティーのmatchNameと番号をパス要素にまとめる。
         function pathEntry(matchName, index) {
             return list(
                 'tdsi',
@@ -1042,6 +1125,8 @@ var PseudoFXForge = (function () {
                       }
                     : definition.flat[controlIndex - 1];
             type = control.type;
+
+            // 型・表示名・動作フラグ・初期値の定義
             parameterData = zeros(FORMAT.PARAMETER_BYTES);
             parameterData = replaceBytes(
                 parameterData,
@@ -1062,6 +1147,7 @@ var PseudoFXForge = (function () {
                     u32(FORMAT.INVISIBLE_FLAG)
                 );
             }
+
             // 動作フラグと初期値の登録。
             var behaviourFlags =
                 control.keyframes === false ? FORMAT.CANNOT_ANIMATE_FLAG : 0;
@@ -1173,6 +1259,8 @@ var PseudoFXForge = (function () {
                         u16(FORMAT.SLIDER_UNITS[control.unit])
                 );
             }
+
+            // パラメーター定義と補助文字列のチャンク化
             parameters +=
                 propertyId(controlIndex) + chunk('pard', parameterData);
             if (type === 'dropdown' || type === 'checkbox') {
@@ -1183,6 +1271,8 @@ var PseudoFXForge = (function () {
                         : '\x00'
                 );
             }
+
+            // AEが保存するプロパティー状態
             descriptor = zeros(FORMAT.DESCRIPTOR_BYTES);
             descriptor = replaceBytes(
                 descriptor,
@@ -1239,6 +1329,8 @@ var PseudoFXForge = (function () {
                         u32(-1)
                 );
             }
+
+            // 型別の現在値の保存領域
             valueBytes = zeros(valueByteLength(type));
             if (type === 'colour') {
                 valueBytes = replaceBytes(
@@ -1280,6 +1372,8 @@ var PseudoFXForge = (function () {
             if (type === 'layer' || type === 'endgroup') {
                 extraChunks = chunk('tdpi', u32(0));
             }
+
+            // プロパティーIDと保存状態の対応付け
             propertyGroup +=
                 propertyId(controlIndex) +
                 list(
@@ -1291,12 +1385,14 @@ var PseudoFXForge = (function () {
                         extraChunks
                 );
         }
+
         // プロパティー列の終端
         propertyGroup += chunk(
             'tdmn',
             fixedString('ADBE Group End', FORMAT.MATCH_NAME_BYTES)
         );
 
+        // プリセット全体の設定
         var effectSettings =
             u32(1) +
             u32(1) +
@@ -1337,6 +1433,8 @@ var PseudoFXForge = (function () {
             );
         return 'RIFX' + u32(body.length + 4) + 'FaFX' + body;
     }
+
+    // ファイルをバイナリーで読み、読込みとクローズの成否を確認する。
     function read(file) {
         file.encoding = 'BINARY';
         if (!file.open('r')) {
@@ -1355,6 +1453,8 @@ var PseudoFXForge = (function () {
         }
         return result;
     }
+
+    // 親フォルダーから順に作成し、作成結果を確認する。
     function ensureFolder(folder) {
         if (folder.exists) {
             return;
@@ -1369,6 +1469,8 @@ var PseudoFXForge = (function () {
             );
         }
     }
+
+    // 省略時は空のオプションを返し、指定時は未知の属性を検出する。
     function options(value, allowed) {
         if (typeof value === 'undefined') {
             return {};
@@ -1377,8 +1479,8 @@ var PseudoFXForge = (function () {
         keys(value, allowed, 'options');
         return value;
     }
-    // 一時ファイルの検証と置換。
 
+    // 同一FFXを再利用し、不一致なら検証済みの一時ファイルで置き換える。
     function writeFFX(data, outputDirectory, settings) {
         settings = options(settings, {
             fileName: 1
@@ -1415,6 +1517,8 @@ var PseudoFXForge = (function () {
         }
         ensureFolder(directory);
         target = new File(directory.fsName + '/' + fileName);
+
+        // 既存FFXの全バイトが一致すれば再利用
         if (target.exists && read(target) === bytes) {
             return {
                 file: target,
@@ -1429,6 +1533,7 @@ var PseudoFXForge = (function () {
         temporaryFile = new File(directory.fsName + '/.pfx-' + token + '.tmp');
         backupFile = new File(directory.fsName + '/.pfx-' + token + '.bak');
         try {
+            // 一時ファイルへの書込み
             temporaryFile.encoding = 'BINARY';
             if (!temporaryFile.open('w')) {
                 fail(
@@ -1448,6 +1553,8 @@ var PseudoFXForge = (function () {
                     fail('IO', 'Cannot close temporary file');
                 }
             }
+
+            // 書込み結果の検証後に既存ファイルを退避
             if (read(temporaryFile) !== bytes) {
                 fail('IO', 'Temporary file verification failed');
             }
@@ -1455,6 +1562,8 @@ var PseudoFXForge = (function () {
             if (target.exists && !target.rename(backupFile.name)) {
                 fail('IO', 'Cannot back up existing file: ' + target.error);
             }
+
+            // 置換に失敗した場合は既存ファイルを復元
             if (!temporaryFile.rename(fileName)) {
                 if (backupFile.exists && !backupFile.rename(fileName)) {
                     fail(
@@ -1465,6 +1574,8 @@ var PseudoFXForge = (function () {
                 }
                 fail('IO', 'Cannot replace output file');
             }
+
+            // 置換後の全バイトを検証して退避ファイルを削除
             target = new File(oldPath);
             if (read(target) !== bytes) {
                 fail(
@@ -1497,8 +1608,8 @@ var PseudoFXForge = (function () {
             }
         }
     }
-    // AEへの定義登録。
 
+    // 指定matchNameをAEへ追加できるか判定し、ホスト例外を分類する。
     function canAddEffect(effectsProp, matchName) {
         try {
             return effectsProp.canAddProperty(matchName);
@@ -1509,6 +1620,8 @@ var PseudoFXForge = (function () {
             );
         }
     }
+
+    // 未登録ならFFXで定義を登録し、指定Effectsへエフェクトを追加する。
     function applyPseudoEffect(data, effectsProp, settings) {
         settings = options(settings, {
             outputDirectory: 1,
@@ -1545,6 +1658,8 @@ var PseudoFXForge = (function () {
         } catch (caughtError) {
             fail('INPUT', 'Invalid Effects property group');
         }
+
+        // AEに未登録の場合だけFFXを生成・登録
         if (!canAddEffect(effectsProp, definition.matchName)) {
             file = writeFFX(
                 data,
@@ -1557,6 +1672,7 @@ var PseudoFXForge = (function () {
                       }
             ).file;
             try {
+                // 元の選択レイヤーを保存して選択解除
                 activeItem = project.activeItem;
                 if (activeItem && activeItem instanceof CompItem) {
                     for (
@@ -1570,6 +1686,8 @@ var PseudoFXForge = (function () {
                         }
                     }
                 }
+
+                // 一時レイヤーだけにプリセットを適用
                 temporaryComp = project.items.addComp(
                     'PseudoFXForge registration',
                     100,
@@ -1581,6 +1699,8 @@ var PseudoFXForge = (function () {
                 temporaryLayer = temporaryComp.layers.addShape();
                 temporaryLayer.selected = true;
                 temporaryLayer.applyPreset(file);
+
+                // プリセット適用後の定義登録を確認
                 if (!effectsProp.canAddProperty(definition.matchName)) {
                     fail(
                         'REGISTER',
@@ -1591,6 +1711,7 @@ var PseudoFXForge = (function () {
                 error = registrationError;
             } finally {
                 try {
+                    // 登録の成否にかかわらず一時コンポジションを削除
                     if (temporaryComp) {
                         temporaryComp.remove();
                     }
@@ -1603,6 +1724,7 @@ var PseudoFXForge = (function () {
                     layerIndex++
                 ) {
                     try {
+                        // 元のレイヤー選択を復元
                         selectedLayers[layerIndex].selected = true;
                     } catch (selectionError) {
                         error = selectionError;
@@ -1610,6 +1732,7 @@ var PseudoFXForge = (function () {
                 }
                 try {
                     if (activeItem && activeItem instanceof CompItem) {
+                        // 元のコンポジションのビューアーを復元
                         activeItem.openInViewer();
                     }
                 } catch (viewerError) {
@@ -1621,6 +1744,7 @@ var PseudoFXForge = (function () {
             }
         }
         try {
+            // 指定Effectsへ追加し、入力の表示名を設定
             result = effectsProp.addProperty(definition.matchName);
             if (!result) {
                 fail('APPLY', 'addProperty returned no effect');

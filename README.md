@@ -6,8 +6,6 @@
 
 JSONからAfter Effectsの疑似エフェクト用FFXを生成するExtendScriptライブラリです。FFXを指定フォルダーへ保存し、同じ定義のファイルを再利用してレイヤーへ適用できます。
 
-実行時にNode.js、CEP、外部コマンドは必要ありません。
-
 ### 導入
 
 配布用の `PseudoFXForge.jsxinc` をスクリプトから `#include` してください。After Effectsの環境設定で、スクリプトによるファイルへの書き込みを許可します。
@@ -144,8 +142,6 @@ AEはプロパティ追加時に既存のプロパティ参照を無効にする
 ## English
 
 An ExtendScript library for generating After Effects pseudo-effect FFX files from JSON. It saves files to a chosen directory, reuses matching files, and applies effects to a layer.
-
-The library requires no Node.js, CEP, or external commands at runtime.
 
 ### Installation
 
