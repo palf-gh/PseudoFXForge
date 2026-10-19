@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES3",
+    "module": "ESNext",
+    "lib": ["ES5"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["types-for-adobe/AfterEffects/23.0"]
+  },
+  "files": ["module-types.ts", "../examples/typescript.ts"]
+}

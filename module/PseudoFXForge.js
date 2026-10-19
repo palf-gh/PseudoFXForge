@@ -1,0 +1,1770 @@
+/* ============================================================
+ * PseudoFXForge v0.1.0
+ * Copyright (c) 2026 Palf | MIT License
+ * ============================================================ */
+var PseudoFXForge = (function () {
+    var VERSION = '0.1.0',
+        hasOwn = Object.prototype.hasOwnProperty;
+
+    // バイト列の桁重み
+    var BINARY = {
+        BYTE_BASE: 256,
+        WORD_BASE: 65536,
+        THREE_BYTE_BASE: 16777216,
+        UINT32_BASE: 4294967296
+    };
+
+    // FFXのフィールド定義。
+    var FORMAT = {
+        MATCH_NAME_BYTES: 40,
+        PSEUDO_MATCH_NAME_MAX: 31,
+        MATCH_SUFFIX_LENGTH: 13,
+        REFERENCE_LAYER_ID: 1,
+        CONTROL_NAME_BYTES: 32,
+        MAX_DROPDOWN_ITEMS: 32767,
+        PARAMETER_BYTES: 148,
+        DESCRIPTOR_BYTES: 124,
+        MAX_GROUP_DEPTH: 16,
+        MAX_CONTROL_ENTRIES: 9998,
+        COLOUR_CHANNEL_MAX: 255,
+        COLOUR_BYTE_MAX: 255,
+        PARAMETER_TYPE_OFFSET: 12,
+        PARAMETER_NAME_OFFSET: 16,
+        PARAMETER_UI_FLAGS_OFFSET: 4,
+        PARAMETER_BEHAVIOUR_FLAGS_OFFSET: 48,
+        PARAMETER_DEFAULT_OFFSET: 56,
+        PARAMETER_COLOUR_OFFSET: 60,
+        PARAMETER_SLIDER_OFFSET: 104,
+        PARAMETER_SENTINEL_OFFSET: 128,
+        INVISIBLE_FLAG: 512,
+        CANNOT_ANIMATE_FLAG: 2,
+        HOLD_FLAG: 4,
+        START_COLLAPSED_FLAG: 32,
+        FIXED_POINT_SCALE: 65536,
+        SLIDER_UNITS: {
+            none: 0,
+            percent: 1,
+            pixels: 2
+        },
+        ANGLE_DEFAULT_OFFSET: 60,
+        CHECKBOX_DEFAULT_OFFSET: 60,
+        POINT_DEFAULT_OFFSET: 68,
+        POINT3D_DEFAULT_OFFSET: 80,
+        LAYER_DEFAULT_OFFSET: 128,
+        DESCRIPTOR_TIME_SCALE: 65536,
+        DESCRIPTOR_HOLD_FLAGS: 65540,
+        DESCRIPTOR_ANIMATED_FLAGS: 65791,
+        DESCRIPTOR_ROOT_RATE: 600,
+        DESCRIPTOR_PROPERTY_RATE: 23976,
+        DESCRIPTOR_SCALAR_SIGNATURE: 0xbd990001,
+        DESCRIPTOR_DISCRETE_SIGNATURE: 0xdb990001,
+        DESCRIPTOR_COLOUR_SIGNATURE: 0xbd990004,
+        DESCRIPTOR_COLOUR_LAYOUT: 458753,
+        DESCRIPTOR_COLOUR_FLAGS: 196607,
+        DESCRIPTOR_POINT_SIGNATURE: 0xdb990002,
+        DESCRIPTOR_POINT3D_SIGNATURE: 0xdb990003,
+        DESCRIPTOR_POINT_LAYOUT: 983043,
+        EFFECT_SETTINGS_VERSION: 16777216,
+        COLOUR_VALUE_BYTES: 96,
+        POINT_VALUE_BYTES: 48,
+        POINT3D_VALUE_BYTES: 72,
+        SCALAR_VALUE_BYTES: 40,
+        ENCODING_VERSION: 4
+    };
+    FORMAT.MAX_BASE_MATCH_NAME_LENGTH =
+        FORMAT.PSEUDO_MATCH_NAME_MAX - FORMAT.MATCH_SUFFIX_LENGTH - 1;
+
+    // エラーコードと入力位置を付けて例外を投げる。
+    function fail(code, message, path) {
+        var error = new Error(
+            'PseudoFXForge ' + code + ': ' + (path ? path + ': ' : '') + message
+        );
+        error.code = code;
+        error.path = path || '';
+        throw error;
+    }
+
+    // オブジェクト自身が指定キーを持つか判定する。
+    function has(object, key) {
+        return hasOwn.call(object, key);
+    }
+
+    // 値が配列か判定する。
+    function array(value) {
+        return Object.prototype.toString.call(value) === '[object Array]';
+    }
+
+    // 許可された属性以外があれば入力エラーにする。
+    function keys(object, allowed, path) {
+        var key;
+        for (key in object) {
+            if (has(object, key) && !has(allowed, key)) {
+                fail('INPUT', 'Unknown attribute ' + key, path);
+            }
+        }
+    }
+
+    // 配列やnullではないオブジェクトか検証する。
+    function object(value, path) {
+        if (!value || typeof value !== 'object' || array(value)) {
+            fail('INPUT', 'Expected an object', path);
+        }
+    }
+
+    // 空文字列・制御文字・不正なサロゲートを含まない文字列か検証する。
+    function text(value, path) {
+        var index, codeUnit, nextCodeUnit;
+        if (
+            typeof value !== 'string' ||
+            !value.length ||
+            /[\x00-\x1f]/.test(value)
+        ) {
+            fail(
+                'INPUT',
+                'Expected a non-empty string without control characters',
+                path
+            );
+        }
+        for (index = 0; index < value.length; index++) {
+            codeUnit = value.charCodeAt(index);
+            if (codeUnit >= 55296 && codeUnit <= 56319) {
+                nextCodeUnit = value.charCodeAt(++index);
+                if (!(nextCodeUnit >= 56320 && nextCodeUnit <= 57343)) {
+                    fail('INPUT', 'Unpaired surrogate', path);
+                }
+            } else if (codeUnit >= 56320 && codeUnit <= 57343) {
+                fail('INPUT', 'Unpaired surrogate', path);
+            }
+        }
+        return value;
+    }
+
+    // 有限数を検証し、省略時は既定値を返す。
+    function number(value, fallback, path) {
+        if (typeof value === 'undefined') {
+            return fallback;
+        }
+        if (typeof value !== 'number' || !isFinite(value)) {
+            fail('INPUT', 'Expected a finite number', path);
+        }
+        return value;
+    }
+
+    // 真偽値を検証し、省略時は既定値を返す。
+    function bool(value, fallback, path) {
+        if (typeof value === 'undefined') {
+            return fallback;
+        }
+        if (typeof value !== 'boolean') {
+            fail('INPUT', 'Expected a boolean', path);
+        }
+        return value;
+    }
+
+    // 既定値を補完し、指定範囲内の整数か検証する。
+    function integer(value, fallback, minimum, maximum, path) {
+        value = number(value, fallback, path);
+        if (value !== Math.floor(value) || value < minimum || value > maximum) {
+            fail(
+                'INPUT',
+                'Integer out of range ' + minimum + '..' + maximum,
+                path
+            );
+        }
+        return value;
+    }
+
+    // evalを使わずJSON文字列を解析する。
+    function parseJSON(source) {
+        var position = 0,
+            depth = 0;
+
+        // JSON構文エラーに現在の読取位置を付ける。
+        function error() {
+            fail('JSON', 'Invalid JSON at character ' + position);
+        }
+
+        // JSONで許される空白を読み飛ばす。
+        function skipWhitespace() {
+            while (
+                /[\x20\t\r\n]/.test(source.charAt(position)) &&
+                position < source.length
+            ) {
+                position++;
+            }
+        }
+
+        // エスケープを解釈し、JSON文字列を読み取る。
+        function parseString() {
+            var result = '',
+                character,
+                hexDigits,
+                escapeMap = {
+                    '"': '"',
+                    '\\': '\\',
+                    '/': '/',
+                    b: '\b',
+                    f: '\f',
+                    n: '\n',
+                    r: '\r',
+                    t: '\t'
+                };
+            position++;
+            while (position < source.length) {
+                character = source.charAt(position++);
+                if (character === '"') {
+                    return result;
+                }
+                if (character === '\\') {
+                    character = source.charAt(position++);
+                    if (character === 'u') {
+                        hexDigits = source.substr(position, 4);
+                        if (!/^[0-9a-fA-F]{4}$/.test(hexDigits)) {
+                            error();
+                        }
+                        result += String.fromCharCode(parseInt(hexDigits, 16));
+                        position += 4;
+                    } else if (has(escapeMap, character)) {
+                        result += escapeMap[character];
+                    } else {
+                        error();
+                    }
+                } else {
+                    if (character.charCodeAt(0) < 32) {
+                        error();
+                    }
+                    result += character;
+                }
+            }
+            error();
+        }
+
+        // オブジェクト・配列・値を再帰的に読み取る。
+        function parseValue() {
+            var character, result, key, numberMatch, numericValue;
+            skipWhitespace();
+            if (++depth > 64) {
+                fail('JSON', 'Maximum nesting depth is 64');
+            }
+            character = source.charAt(position);
+            if (character === '"') {
+                result = parseString();
+            } else if (character === '{') {
+                result = {};
+                position++;
+                skipWhitespace();
+                if (source.charAt(position) !== '}') {
+                    while (true) {
+                        skipWhitespace();
+                        if (source.charAt(position) !== '"') {
+                            error();
+                        }
+                        key = parseString();
+                        if (
+                            key === '__proto__' ||
+                            key === 'constructor' ||
+                            key === 'prototype' ||
+                            has(result, key)
+                        ) {
+                            fail('JSON', 'Duplicate or reserved key ' + key);
+                        }
+                        skipWhitespace();
+                        if (source.charAt(position++) !== ':') {
+                            error();
+                        }
+                        result[key] = parseValue();
+                        skipWhitespace();
+                        character = source.charAt(position++);
+                        if (character === '}') {
+                            break;
+                        }
+                        if (character !== ',') {
+                            error();
+                        }
+                    }
+                } else {
+                    position++;
+                }
+            } else if (character === '[') {
+                result = [];
+                position++;
+                skipWhitespace();
+                if (source.charAt(position) !== ']') {
+                    while (true) {
+                        result.push(parseValue());
+                        skipWhitespace();
+                        character = source.charAt(position++);
+                        if (character === ']') {
+                            break;
+                        }
+                        if (character !== ',') {
+                            error();
+                        }
+                    }
+                } else {
+                    position++;
+                }
+            } else if (source.substr(position, 4) === 'true') {
+                result = true;
+                position += 4;
+            } else if (source.substr(position, 5) === 'false') {
+                result = false;
+                position += 5;
+            } else if (source.substr(position, 4) === 'null') {
+                result = null;
+                position += 4;
+            } else {
+                numberMatch =
+                    /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(
+                        source.substring(position)
+                    );
+                if (!numberMatch) {
+                    error();
+                }
+                position += numberMatch[0].length;
+                numericValue = Number(numberMatch[0]);
+                if (!isFinite(numericValue)) {
+                    error();
+                }
+                result = numericValue;
+            }
+            depth--;
+            return result;
+        }
+        var result = parseValue();
+        skipWhitespace();
+        if (position !== source.length) {
+            error();
+        }
+        return result;
+    }
+
+    // 文字列をエスケープし、JSONの引用符で囲む。
+    function quote(value) {
+        return (
+            '"' +
+            value.replace(/["\\\x00-\x1f]/g, function (character) {
+                var hexDigits = character.charCodeAt(0).toString(16);
+                return '\\u' + ('0000' + hexDigits).slice(-4);
+            }) +
+            '"'
+        );
+    }
+
+    // キー順をそろえ、定義比較用のJSON文字列を作る。
+    function canonical(value) {
+        var parts = [],
+            key,
+            propertyNames = [],
+            index;
+        if (value === null) {
+            return 'null';
+        }
+        if (typeof value === 'string') {
+            return quote(value);
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') {
+            return String(value);
+        }
+        if (array(value)) {
+            for (index = 0; index < value.length; index++) {
+                parts.push(canonical(value[index]));
+            }
+            return '[' + parts.join(',') + ']';
+        }
+        for (key in value) {
+            if (has(value, key)) {
+                propertyNames.push(key);
+            }
+        }
+        propertyNames.sort();
+        for (index = 0; index < propertyNames.length; index++) {
+            key = propertyNames[index];
+            parts.push(quote(key) + ':' + canonical(value[key]));
+        }
+        return '{' + parts.join(',') + '}';
+    }
+
+    // Unicode文字列をUTF-8のバイト列へ変換する。
+    function utf8(value) {
+        var result = '',
+            index,
+            codePoint;
+        for (index = 0; index < value.length; index++) {
+            codePoint = value.charCodeAt(index);
+            if (codePoint >= 55296 && codePoint <= 56319) {
+                codePoint =
+                    FORMAT.DESCRIPTOR_TIME_SCALE +
+                    (codePoint - 55296) * 1024 +
+                    value.charCodeAt(++index) -
+                    56320;
+            }
+            if (codePoint < 128) {
+                result += encodeByte(codePoint);
+            } else if (codePoint < 2048) {
+                result +=
+                    encodeByte(192 + Math.floor(codePoint / 64)) +
+                    encodeByte(128 + (codePoint % 64));
+            } else if (codePoint < FORMAT.DESCRIPTOR_TIME_SCALE) {
+                result +=
+                    encodeByte(224 + Math.floor(codePoint / 4096)) +
+                    encodeByte(128 + (Math.floor(codePoint / 64) % 64)) +
+                    encodeByte(128 + (codePoint % 64));
+            } else {
+                result +=
+                    encodeByte(240 + Math.floor(codePoint / 262144)) +
+                    encodeByte(128 + (Math.floor(codePoint / 4096) % 64)) +
+                    encodeByte(128 + (Math.floor(codePoint / 64) % 64)) +
+                    encodeByte(128 + (codePoint % 64));
+            }
+        }
+        return result;
+    }
+
+    // 下位8ビットをバイナリー書込み用の1文字にする。
+    function encodeByte(value) {
+        return String.fromCharCode(value & 255);
+    }
+
+    // 指定バイト数のゼロ領域を作る。
+    function zeros(length) {
+        return new Array(length + 1).join('\x00');
+    }
+
+    // 整数をビッグエンディアンの2バイト列にする。
+    function u16(value) {
+        return encodeByte(Math.floor(value / 256)) + encodeByte(value);
+    }
+
+    // 整数をビッグエンディアンの4バイト列にする。
+    function u32(value) {
+        value = value < 0 ? value + BINARY.UINT32_BASE : value;
+        return (
+            encodeByte(Math.floor(value / BINARY.THREE_BYTE_BASE)) +
+            encodeByte(Math.floor(value / BINARY.WORD_BASE)) +
+            encodeByte(Math.floor(value / BINARY.BYTE_BASE)) +
+            encodeByte(value)
+        );
+    }
+
+    // ビッグエンディアンの4バイト列を符号なし整数として読む。
+    function read32(bytes, offset) {
+        return (
+            bytes.charCodeAt(offset) * BINARY.THREE_BYTE_BASE +
+            bytes.charCodeAt(offset + 1) * BINARY.WORD_BASE +
+            bytes.charCodeAt(offset + 2) * BINARY.BYTE_BASE +
+            bytes.charCodeAt(offset + 3)
+        );
+    }
+
+    // 数値をIEEE 754の32／64ビットのビッグエンディアン列へ変換する。
+    function floatBytes(value, bits) {
+        var sign = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0,
+            absoluteValue = Math.abs(value),
+            mantissaBits = bits === 32 ? 23 : 52,
+            bias = bits === 32 ? 127 : 1023,
+            exponent,
+            mantissa,
+            highWord,
+            lowWord;
+        if (absoluteValue === 0) {
+            return bits === 32
+                ? u32(sign * 2147483648)
+                : u32(sign * 2147483648) + u32(0);
+        }
+        exponent = Math.floor(Math.log(absoluteValue) / Math.LN2);
+        if (absoluteValue < Math.pow(2, exponent)) {
+            exponent--;
+        }
+        if (absoluteValue >= Math.pow(2, exponent + 1)) {
+            exponent++;
+        }
+        if (exponent + bias <= 0) {
+            mantissa = Math.round(
+                absoluteValue / Math.pow(2, 1 - bias - mantissaBits)
+            );
+            exponent = 0;
+        } else {
+            mantissa = Math.round(
+                (absoluteValue / Math.pow(2, exponent) - 1) *
+                    Math.pow(2, mantissaBits)
+            );
+            exponent += bias;
+            if (mantissa >= Math.pow(2, mantissaBits)) {
+                mantissa = 0;
+                exponent++;
+            }
+        }
+        if (exponent >= bias * 2 + 1) {
+            fail('INPUT', 'Value exceeds floating point range');
+        }
+        if (bits === 32) {
+            return u32(sign * 2147483648 + exponent * 8388608 + mantissa);
+        }
+        highWord =
+            sign * 2147483648 +
+            exponent * 1048576 +
+            Math.floor(mantissa / 4294967296);
+        lowWord = mantissa % 4294967296;
+        return u32(highWord) + u32(lowWord);
+    }
+
+    // 数値を単精度浮動小数点の4バイト列にする。
+    function f32(value) {
+        return floatBytes(value, 32);
+    }
+
+    // 数値を倍精度浮動小数点の8バイト列にする。
+    function f64(value) {
+        return floatBytes(value, 64);
+    }
+
+    // UTF-8文字列の長さを検証し、残りをゼロで埋める。
+    function fixedString(value, length) {
+        value = utf8(value);
+        if (value.length >= length) {
+            fail(
+                'INPUT',
+                'Encoded identifier must be shorter than ' + length + ' bytes'
+            );
+        }
+        return value + zeros(length - value.length);
+    }
+
+    // バイト列の指定位置を同じ長さのデータで置き換える。
+    function replaceBytes(bytes, offset, value) {
+        return (
+            bytes.substring(0, offset) +
+            value +
+            bytes.substring(offset + value.length)
+        );
+    }
+
+    // タグ・データ長・偶数長パディングを付けてRIFXチャンクを作る。
+    function chunk(tag, data) {
+        return tag + u32(data.length) + data + (data.length % 2 ? '\x00' : '');
+    }
+
+    // 種類名と子チャンクをLISTチャンクにまとめる。
+    function list(type, data) {
+        return chunk('LIST', type + data);
+    }
+
+    // 定義のバイト列から2系統のハッシュで16桁の識別値を作る。
+    function fingerprint(bytes) {
+        var firstHash = 2166136261,
+            secondHash = 5381,
+            index;
+        for (index = 0; index < bytes.length; index++) {
+            firstHash ^= bytes.charCodeAt(index);
+            firstHash =
+                (firstHash +
+                    (firstHash << 1) +
+                    (firstHash << 4) +
+                    (firstHash << 7) +
+                    (firstHash << 8) +
+                    (firstHash << 24)) >>>
+                0;
+            secondHash = ((secondHash * 33) ^ bytes.charCodeAt(index)) >>> 0;
+        }
+        return (
+            ('00000000' + firstHash.toString(16)).slice(-8) +
+            ('00000000' + secondHash.toString(16)).slice(-8)
+        );
+    }
+    var CONTROL_TYPES = {
+        slider: 10,
+        angle: 3,
+        checkbox: 4,
+        colour: 5,
+        point: 6,
+        point3d: 18,
+        layer: 0,
+        dropdown: 7,
+        label: 13,
+        group: 13
+    };
+
+    // Sliderの範囲・精度・単位を検証し、既定値を補完する。
+    function normaliseSlider(control, inputControl, controlPath) {
+        control.min = number(inputControl.min, -1000000, controlPath + '.min');
+        control.max = number(inputControl.max, 1000000, controlPath + '.max');
+        control.sliderMin = number(
+            inputControl.sliderMin,
+            Math.max(control.min, 0),
+            controlPath + '.sliderMin'
+        );
+        control.sliderMax = number(
+            inputControl.sliderMax,
+            Math.min(control.max, 100),
+            controlPath + '.sliderMax'
+        );
+        if (
+            control.min > control.sliderMin ||
+            control.sliderMin > control.sliderMax ||
+            control.sliderMax > control.max ||
+            control['default'] < control.min ||
+            control['default'] > control.max
+        ) {
+            fail(
+                'INPUT',
+                'Require min <= sliderMin <= sliderMax <= max and default inside min..max',
+                controlPath
+            );
+        }
+        control.precision = integer(
+            inputControl.precision,
+            2,
+            0,
+            6,
+            controlPath + '.precision'
+        );
+        control.unit =
+            typeof inputControl.unit === 'undefined'
+                ? 'none'
+                : inputControl.unit;
+        if (
+            control.unit !== 'none' &&
+            control.unit !== 'percent' &&
+            control.unit !== 'pixels'
+        ) {
+            fail(
+                'INPUT',
+                'Expected none, percent or pixels',
+                controlPath + '.unit'
+            );
+        }
+        f32(control.min);
+        f32(control.max);
+        f32(control['default']);
+        f32(control.sliderMin);
+        f32(control.sliderMax);
+    }
+
+    // 16桁の識別値を、matchNameに付ける13桁のBase32へ変換する。
+    function matchNameSuffix(hexFingerprint) {
+        var alphabet = '0123456789abcdefghijklmnopqrstuv';
+        var bits = '0';
+        var suffix = '';
+        var index;
+        var digits;
+        for (index = 0; index < hexFingerprint.length; index++) {
+            digits = parseInt(hexFingerprint.charAt(index), 16).toString(2);
+            bits += ('0000' + digits).slice(-4);
+        }
+        for (index = 0; index < bits.length; index += 5) {
+            suffix += alphabet.charAt(parseInt(bits.substr(index, 5), 2));
+        }
+        return suffix;
+    }
+
+    // 入力を検証し、実際のmatchNameとコントロールの参照情報を返す。
+    function normalise(data) {
+        if (typeof data === 'string') {
+            data = parseJSON(data);
+        }
+        object(data, '$');
+        keys(
+            data,
+            {
+                name: 1,
+                matchName: 1,
+                controls: 1
+            },
+            '$'
+        );
+        var definition = {
+                name: text(data.name, '$.name'),
+                baseMatchName: text(data.matchName, '$.matchName'),
+                controls: []
+            },
+            seenIds = {},
+            flatControls = [],
+            properties = {},
+            serialised,
+            definitionHash;
+        if (!/^Pseudo\/[A-Za-z0-9_.-]+$/.test(definition.baseMatchName)) {
+            fail(
+                'INPUT',
+                'Use Pseudo/ followed by ASCII letters, digits, dot, hyphen or underscore',
+                '$.matchName'
+            );
+        }
+        if (
+            definition.baseMatchName.length > FORMAT.MAX_BASE_MATCH_NAME_LENGTH
+        ) {
+            fail(
+                'INPUT',
+                'Base matchName must contain at most 17 ASCII characters including Pseudo/',
+                '$.matchName'
+            );
+        }
+
+        // グループを再帰的に検証し、IDの参照表と平坦なプロパティー列を作る。
+        function walk(items, path, depth) {
+            var result = [],
+                controlIndex,
+                valueIndex,
+                inputControl,
+                control,
+                controlPath,
+                allowed,
+                dimensions,
+                minimum,
+                maximum;
+            if (!array(items)) {
+                fail('INPUT', 'Expected an array', path);
+            }
+            if (depth > FORMAT.MAX_GROUP_DEPTH) {
+                fail('INPUT', 'Maximum group depth is 16', path);
+            }
+            for (
+                controlIndex = 0;
+                controlIndex < items.length;
+                controlIndex++
+            ) {
+                controlPath = path + '[' + controlIndex + ']';
+                inputControl = items[controlIndex];
+                object(inputControl, controlPath);
+                text(inputControl.type, controlPath + '.type');
+                if (!has(CONTROL_TYPES, inputControl.type)) {
+                    fail(
+                        'INPUT',
+                        'Unknown control type',
+                        controlPath + '.type'
+                    );
+                }
+                allowed = {
+                    id: 1,
+                    name: 1,
+                    type: 1,
+                    invisible: 1
+                };
+                if (inputControl.type === 'group') {
+                    allowed.children = 1;
+                    allowed.open = 1;
+                } else if (inputControl.type !== 'label') {
+                    allowed['default'] = 1;
+                    allowed.keyframes = 1;
+                    allowed.hold = 1;
+                }
+                if (inputControl.type === 'slider') {
+                    allowed.min = 1;
+                    allowed.max = 1;
+                    allowed.sliderMin = 1;
+                    allowed.sliderMax = 1;
+                    allowed.precision = 1;
+                    allowed.unit = 1;
+                }
+                if (inputControl.type === 'dropdown') {
+                    allowed.items = 1;
+                }
+                keys(inputControl, allowed, controlPath);
+                control = {
+                    id: text(inputControl.id, controlPath + '.id'),
+                    name: text(inputControl.name, controlPath + '.name'),
+                    type: inputControl.type,
+                    invisible: bool(
+                        inputControl.invisible,
+                        false,
+                        controlPath + '.invisible'
+                    )
+                };
+                if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(control.id)) {
+                    fail(
+                        'INPUT',
+                        'Use an ASCII identifier starting with a letter',
+                        controlPath + '.id'
+                    );
+                }
+                if (has(seenIds, control.id)) {
+                    fail(
+                        'INPUT',
+                        'Duplicate id ' + control.id,
+                        controlPath + '.id'
+                    );
+                }
+                seenIds[control.id] = true;
+                if (utf8(control.name).length > 31) {
+                    fail(
+                        'INPUT',
+                        'Control name exceeds the 31 UTF-8 byte format limit',
+                        controlPath + '.name'
+                    );
+                }
+                flatControls.push(control);
+                if (flatControls.length > FORMAT.MAX_CONTROL_ENTRIES) {
+                    fail('INPUT', 'Too many controls', path);
+                }
+                control.index = flatControls.length;
+                if (control.type === 'group') {
+                    control.open = bool(
+                        inputControl.open,
+                        true,
+                        controlPath + '.open'
+                    );
+                    control.children = walk(
+                        inputControl.children,
+                        controlPath + '.children',
+                        depth + 1
+                    );
+                    flatControls.push({
+                        type: 'endgroup',
+                        index: flatControls.length + 1
+                    });
+                } else if (control.type === 'label') {
+                    flatControls.push({
+                        type: 'endgroup',
+                        index: flatControls.length + 1
+                    });
+                } else if (control.type !== 'label') {
+                    control.keyframes = bool(
+                        inputControl.keyframes,
+                        control.type !== 'checkbox' &&
+                            control.type !== 'layer' &&
+                            control.type !== 'dropdown',
+                        controlPath + '.keyframes'
+                    );
+                    control.hold = bool(
+                        inputControl.hold,
+                        false,
+                        controlPath + '.hold'
+                    );
+                    if (control.type === 'checkbox') {
+                        control['default'] = bool(
+                            inputControl['default'],
+                            false,
+                            controlPath + '.default'
+                        );
+                    } else if (control.type === 'dropdown') {
+                        if (
+                            !array(inputControl.items) ||
+                            !inputControl.items.length ||
+                            inputControl.items.length >
+                                FORMAT.MAX_DROPDOWN_ITEMS
+                        ) {
+                            fail(
+                                'INPUT',
+                                'Expected non-empty items',
+                                controlPath + '.items'
+                            );
+                        }
+                        control.items = [];
+                        for (
+                            valueIndex = 0;
+                            valueIndex < inputControl.items.length;
+                            valueIndex++
+                        ) {
+                            var item = text(
+                                inputControl.items[valueIndex],
+                                controlPath + '.items[' + valueIndex + ']'
+                            );
+                            if (item.indexOf('|') >= 0) {
+                                fail(
+                                    'INPUT',
+                                    'Dropdown items cannot contain |',
+                                    controlPath + '.items[' + valueIndex + ']'
+                                );
+                            }
+                            control.items.push(item);
+                        }
+                        control['default'] = integer(
+                            inputControl['default'],
+                            1,
+                            1,
+                            control.items.length,
+                            controlPath + '.default'
+                        );
+                    } else if (control.type === 'layer') {
+                        control['default'] = integer(
+                            inputControl['default'],
+                            0,
+                            -1,
+                            0,
+                            controlPath + '.default'
+                        );
+                    } else if (
+                        control.type === 'point' ||
+                        control.type === 'point3d' ||
+                        control.type === 'colour'
+                    ) {
+                        dimensions = control.type === 'point' ? 2 : 3;
+                        control['default'] = [];
+                        if (
+                            typeof inputControl['default'] !== 'undefined' &&
+                            (!array(inputControl['default']) ||
+                                inputControl['default'].length !== dimensions)
+                        ) {
+                            fail(
+                                'INPUT',
+                                'Expected ' + dimensions + ' numbers',
+                                controlPath + '.default'
+                            );
+                        }
+                        for (
+                            valueIndex = 0;
+                            valueIndex < dimensions;
+                            valueIndex++
+                        ) {
+                            if (
+                                inputControl['default'] &&
+                                typeof inputControl['default'][valueIndex] ===
+                                    'undefined'
+                            ) {
+                                fail(
+                                    'INPUT',
+                                    'Every vector component is required',
+                                    controlPath + '.default[' + valueIndex + ']'
+                                );
+                            }
+                            control['default'][valueIndex] = number(
+                                inputControl['default']
+                                    ? inputControl['default'][valueIndex]
+                                    : undefined,
+                                0,
+                                controlPath + '.default[' + valueIndex + ']'
+                            );
+                            if (
+                                control.type === 'colour' &&
+                                (control['default'][valueIndex] < 0 ||
+                                    control['default'][valueIndex] > 1)
+                            ) {
+                                fail(
+                                    'INPUT',
+                                    'Colour channels use 0..1',
+                                    controlPath + '.default'
+                                );
+                            }
+                        }
+                    } else {
+                        control['default'] = number(
+                            inputControl['default'],
+                            0,
+                            controlPath + '.default'
+                        );
+                    }
+                    if (control.type === 'slider') {
+                        normaliseSlider(control, inputControl, controlPath);
+                    }
+                }
+                if (control.type === 'angle') {
+                    validateFixedPoint(
+                        control['default'],
+                        controlPath + '.default'
+                    );
+                }
+                if (control.type === 'point') {
+                    for (
+                        var componentIndex = 0;
+                        componentIndex < control['default'].length;
+                        componentIndex++
+                    ) {
+                        validateFixedPoint(
+                            control['default'][componentIndex],
+                            controlPath + '.default[' + componentIndex + ']'
+                        );
+                    }
+                }
+                result.push(control);
+            }
+            return result;
+        }
+
+        // 階層の検証とプロパティー順の確定
+        definition.controls = walk(data.controls, '$.controls', 0);
+        if (!definition.controls.length) {
+            fail('INPUT', 'At least one control is required', '$.controls');
+        }
+        if (flatControls.length > 9998) {
+            fail(
+                'INPUT',
+                'Too many controls including structural markers',
+                '$.controls'
+            );
+        }
+
+        // 同じ定義から同じmatchNameを作るための正規化文字列
+        serialised = canonical({
+            format: FORMAT.ENCODING_VERSION,
+            name: definition.name,
+            matchName: definition.baseMatchName,
+            controls: definition.controls
+        });
+        definitionHash = fingerprint(utf8(serialised));
+
+        // 定義識別値を付加した実際のmatchName
+        definition.matchName =
+            definition.baseMatchName + '_' + matchNameSuffix(definitionHash);
+        for (var index = 0; index < flatControls.length; index++) {
+            if (flatControls[index].id) {
+                // 入力IDからAEの番号・matchNameへの参照表
+                properties[flatControls[index].id] = {
+                    index: flatControls[index].index,
+                    matchName:
+                        definition.matchName +
+                        '-' +
+                        ('0000' + flatControls[index].index).slice(-4)
+                };
+            }
+        }
+        definition.properties = properties;
+        definition.fingerprint = definitionHash;
+        definition.canonical = serialised;
+        definition.flat = flatControls;
+        return definition;
+    }
+
+    // 符号付き16.16固定小数点の表現範囲を検証する。
+    function validateFixedPoint(value, path) {
+        var scaled = Math.round(value * FORMAT.FIXED_POINT_SCALE);
+        if (scaled < -2147483648 || scaled > 2147483647) {
+            fail('INPUT', 'Value exceeds the 16.16 fixed point range', path);
+        }
+    }
+
+    // 数値を16.16固定小数点の4バイト列にする。
+    function fixedPoint(value) {
+        var scaled = Math.round(value * FORMAT.FIXED_POINT_SCALE);
+        if (scaled < -2147483648 || scaled > 2147483647) {
+            fail('INPUT', 'Value exceeds the 16.16 fixed point range');
+        }
+        return u32(scaled);
+    }
+
+    // コントロール型に対応するAEのパラメーター型番号を返す。
+    function controlTypeCode(type) {
+        if (type === 'root') return 0;
+        if (type === 'endgroup') return 14;
+        return CONTROL_TYPES[type];
+    }
+
+    // ルート・補間方法・アニメーション可否から保存状態のフラグを決める。
+    function descriptorFlags(type, control) {
+        if (type === 'root') return FORMAT.DESCRIPTOR_TIME_SCALE;
+        if (
+            type === 'group' ||
+            type === 'endgroup' ||
+            type === 'label' ||
+            type === 'checkbox' ||
+            control.hold ||
+            control.keyframes === false
+        )
+            return FORMAT.DESCRIPTOR_HOLD_FLAGS;
+        return FORMAT.DESCRIPTOR_ANIMATED_FLAGS;
+    }
+
+    // 型ごとに現在値の保存領域サイズを返す。
+    function valueByteLength(type) {
+        if (type === 'colour') return FORMAT.COLOUR_VALUE_BYTES;
+        if (type === 'point') return FORMAT.POINT_VALUE_BYTES;
+        if (type === 'point3d') return FORMAT.POINT3D_VALUE_BYTES;
+        return FORMAT.SCALAR_VALUE_BYTES;
+    }
+
+    // 真偽値の初期値を0／1へ変換し、数値はそのまま返す。
+    function scalarDefault(value) {
+        if (value === true) return 1;
+        if (value === false) return 0;
+        return value;
+    }
+
+    // 正規化済み定義から、FFXのRIFXバイト列を組み立てる。
+    function encode(definition) {
+        var propertyPath,
+            parameters,
+            propertyGroup,
+            controlIndex,
+            control,
+            parameterData,
+            descriptor,
+            valueBytes,
+            extraChunks,
+            type,
+            count = definition.flat.length + 1;
+
+        // ルートまたは連番付きコントロールのtdmnチャンクを作る。
+        function propertyId(index) {
+            return chunk(
+                'tdmn',
+                fixedString(
+                    definition.matchName + '-' + ('0000' + index).slice(-4),
+                    FORMAT.MATCH_NAME_BYTES
+                )
+            );
+        }
+
+        // 適用先プロパティーのmatchNameと番号をパス要素にまとめる。
+        function pathEntry(matchName, index) {
+            return list(
+                'tdsi',
+                chunk('tdix', u32(index)) +
+                    chunk(
+                        'tdmn',
+                        fixedString(matchName, FORMAT.MATCH_NAME_BYTES)
+                    )
+            );
+        }
+        propertyPath = list(
+            'tdsp',
+            chunk('tdot', u32(-1)) +
+                chunk('tdpl', u32(2)) +
+                pathEntry('ADBE Effect Parade', -1) +
+                pathEntry(definition.matchName, 0)
+        );
+        parameters = chunk('parn', u32(count));
+        propertyGroup =
+            chunk('tdsb', u32(1)) +
+            chunk('tdsn', utf8(definition.name) + '\x00');
+        for (controlIndex = 0; controlIndex < count; controlIndex++) {
+            control =
+                controlIndex === 0
+                    ? {
+                          type: 'root',
+                          name: '',
+                          'default': 0
+                      }
+                    : definition.flat[controlIndex - 1];
+            type = control.type;
+
+            // 型・表示名・動作フラグ・初期値の定義
+            parameterData = zeros(FORMAT.PARAMETER_BYTES);
+            parameterData = replaceBytes(
+                parameterData,
+                FORMAT.PARAMETER_TYPE_OFFSET,
+                u32(controlTypeCode(type))
+            );
+            if (control.name) {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.PARAMETER_NAME_OFFSET,
+                    fixedString(control.name, FORMAT.CONTROL_NAME_BYTES)
+                );
+            }
+            if (control.invisible) {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.PARAMETER_UI_FLAGS_OFFSET,
+                    u32(FORMAT.INVISIBLE_FLAG)
+                );
+            }
+
+            // 動作フラグと初期値の登録。
+            var behaviourFlags =
+                control.keyframes === false ? FORMAT.CANNOT_ANIMATE_FLAG : 0;
+            if (control.hold) {
+                behaviourFlags |= FORMAT.HOLD_FLAG;
+            }
+            if (type === 'group' && !control.open) {
+                behaviourFlags |= FORMAT.START_COLLAPSED_FLAG;
+            }
+            parameterData = replaceBytes(
+                parameterData,
+                FORMAT.PARAMETER_BEHAVIOUR_FLAGS_OFFSET,
+                u32(behaviourFlags)
+            );
+            if (type === 'angle') {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.ANGLE_DEFAULT_OFFSET,
+                    fixedPoint(control['default'])
+                );
+            }
+            if (type === 'checkbox') {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.CHECKBOX_DEFAULT_OFFSET,
+                    encodeByte(control['default'] ? 1 : 0)
+                );
+            }
+            if (type === 'point') {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.POINT_DEFAULT_OFFSET,
+                    fixedPoint(control['default'][0]) +
+                        fixedPoint(control['default'][1])
+                );
+            }
+            if (type === 'point3d') {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.POINT3D_DEFAULT_OFFSET,
+                    f64(control['default'][0]) +
+                        f64(control['default'][1]) +
+                        f64(control['default'][2])
+                );
+            }
+            if (type === 'root') {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.PARAMETER_BEHAVIOUR_FLAGS_OFFSET,
+                    u32(2)
+                );
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.PARAMETER_DEFAULT_OFFSET,
+                    u32(FORMAT.REFERENCE_LAYER_ID)
+                );
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.PARAMETER_SENTINEL_OFFSET,
+                    u32(-1)
+                );
+            }
+            if (type === 'colour') {
+                var colourBytes = encodeByte(FORMAT.COLOUR_CHANNEL_MAX);
+                for (
+                    var channelIndex = 0;
+                    channelIndex < control['default'].length;
+                    channelIndex++
+                ) {
+                    colourBytes += encodeByte(
+                        Math.round(
+                            control['default'][channelIndex] *
+                                FORMAT.COLOUR_CHANNEL_MAX
+                        )
+                    );
+                }
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.PARAMETER_COLOUR_OFFSET,
+                    colourBytes
+                );
+            }
+            if (type === 'layer') {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.LAYER_DEFAULT_OFFSET,
+                    u32(control['default'])
+                );
+            }
+            if (type === 'dropdown') {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.PARAMETER_DEFAULT_OFFSET,
+                    u32(control['default']) +
+                        u16(control.items.length) +
+                        u16(control['default'])
+                );
+            }
+            if (type === 'slider') {
+                parameterData = replaceBytes(
+                    parameterData,
+                    FORMAT.PARAMETER_SLIDER_OFFSET,
+                    f32(control.min) +
+                        f32(control.max) +
+                        f32(control.sliderMin) +
+                        f32(control.sliderMax) +
+                        f32(control['default']) +
+                        u16(control.precision) +
+                        u16(FORMAT.SLIDER_UNITS[control.unit])
+                );
+            }
+
+            // パラメーター定義と補助文字列のチャンク化
+            parameters +=
+                propertyId(controlIndex) + chunk('pard', parameterData);
+            if (type === 'dropdown' || type === 'checkbox') {
+                parameters += chunk(
+                    'pdnm',
+                    type === 'dropdown'
+                        ? utf8(control.items.join('|')) + '\x00'
+                        : '\x00'
+                );
+            }
+
+            // AEが保存するプロパティー状態
+            descriptor = zeros(FORMAT.DESCRIPTOR_BYTES);
+            descriptor = replaceBytes(
+                descriptor,
+                0,
+                u32(
+                    type === 'root' ||
+                        type === 'checkbox' ||
+                        type === 'layer' ||
+                        type === 'dropdown' ||
+                        type === 'point' ||
+                        type === 'point3d'
+                        ? FORMAT.DESCRIPTOR_DISCRETE_SIGNATURE
+                        : FORMAT.DESCRIPTOR_SCALAR_SIGNATURE
+                )
+            );
+            descriptor = replaceBytes(
+                descriptor,
+                4,
+                u32(FORMAT.DESCRIPTOR_TIME_SCALE)
+            );
+            descriptor = replaceBytes(
+                descriptor,
+                8,
+                u32(descriptorFlags(type, control))
+            );
+            descriptor = replaceBytes(
+                descriptor,
+                12,
+                u32(
+                    type === 'root'
+                        ? FORMAT.DESCRIPTOR_ROOT_RATE
+                        : FORMAT.DESCRIPTOR_PROPERTY_RATE
+                )
+            );
+            if (type === 'colour') {
+                descriptor = replaceBytes(
+                    descriptor,
+                    0,
+                    u32(FORMAT.DESCRIPTOR_COLOUR_SIGNATURE) +
+                        u32(FORMAT.DESCRIPTOR_COLOUR_LAYOUT) +
+                        u32(FORMAT.DESCRIPTOR_COLOUR_FLAGS)
+                );
+            }
+            if (type === 'point' || type === 'point3d') {
+                descriptor = replaceBytes(
+                    descriptor,
+                    0,
+                    u32(
+                        type === 'point'
+                            ? FORMAT.DESCRIPTOR_POINT_SIGNATURE
+                            : FORMAT.DESCRIPTOR_POINT3D_SIGNATURE
+                    ) +
+                        u32(FORMAT.DESCRIPTOR_POINT_LAYOUT) +
+                        u32(-1)
+                );
+            }
+
+            // 型別の現在値の保存領域
+            valueBytes = zeros(valueByteLength(type));
+            if (type === 'colour') {
+                valueBytes = replaceBytes(
+                    valueBytes,
+                    0,
+                    f64(255) +
+                        f64(control['default'][0] * FORMAT.COLOUR_BYTE_MAX) +
+                        f64(control['default'][1] * FORMAT.COLOUR_BYTE_MAX) +
+                        f64(control['default'][2] * FORMAT.COLOUR_BYTE_MAX)
+                );
+            } else if (type === 'point' || type === 'point3d') {
+                for (
+                    var channelIndex = 0;
+                    channelIndex < control['default'].length;
+                    channelIndex++
+                ) {
+                    valueBytes = replaceBytes(
+                        valueBytes,
+                        channelIndex * 8,
+                        f64(control['default'][channelIndex])
+                    );
+                }
+            } else if (typeof control['default'] !== 'undefined') {
+                valueBytes = replaceBytes(
+                    valueBytes,
+                    0,
+                    f64(scalarDefault(control['default']))
+                );
+            }
+            extraChunks = '';
+            if (type === 'slider') {
+                extraChunks =
+                    chunk('tdum', f64(control.sliderMin)) +
+                    chunk('tduM', f64(control.sliderMax));
+            }
+            if (type === 'root') {
+                extraChunks = chunk('tdpi', u32(FORMAT.REFERENCE_LAYER_ID));
+            }
+            if (type === 'layer' || type === 'endgroup') {
+                extraChunks = chunk('tdpi', u32(0));
+            }
+
+            // プロパティーIDと保存状態の対応付け
+            propertyGroup +=
+                propertyId(controlIndex) +
+                list(
+                    'tdbs',
+                    chunk('tdsb', u32(type === 'root' ? 3 : 1)) +
+                        chunk('tdsn', utf8(control.name || '') + '\x00') +
+                        chunk('tdb4', descriptor) +
+                        chunk('cdat', valueBytes) +
+                        extraChunks
+                );
+        }
+
+        // プロパティー列の終端
+        propertyGroup += chunk(
+            'tdmn',
+            fixedString('ADBE Group End', FORMAT.MATCH_NAME_BYTES)
+        );
+
+        // プリセット全体の設定
+        var effectSettings =
+            u32(1) +
+            u32(1) +
+            u32(0) +
+            u32(FORMAT.DESCRIPTOR_PROPERTY_RATE) +
+            u32(0) +
+            u32(0) +
+            u16(100) +
+            u16(100) +
+            u16(100) +
+            u16(100) +
+            f64(1) +
+            f64(1) +
+            u32(0) +
+            u32(-1);
+        var body =
+            chunk(
+                'head',
+                u32(3) + u32(68) + u32(1) + u32(FORMAT.EFFECT_SETTINGS_VERSION)
+            ) +
+            list(
+                'besc',
+                chunk('beso', effectSettings) +
+                    propertyPath +
+                    chunk('tdsn', utf8(definition.name) + '\x00') +
+                    list(
+                        'tdsp',
+                        chunk('tdot', u32(-1)) +
+                            chunk('tdpl', u32(1)) +
+                            pathEntry('ADBE End of path sentinel', -1)
+                    ) +
+                    list(
+                        'sspc',
+                        chunk('fnam', zeros(48)) +
+                            list('parT', parameters) +
+                            list('tdgp', propertyGroup)
+                    )
+            );
+        return 'RIFX' + u32(body.length + 4) + 'FaFX' + body;
+    }
+
+    // ファイルをバイナリーで読み、読込みとクローズの成否を確認する。
+    function read(file) {
+        file.encoding = 'BINARY';
+        if (!file.open('r')) {
+            fail('IO', 'Cannot read ' + file.fsName + ': ' + file.error);
+        }
+        var result;
+        try {
+            result = file.read();
+            if (file.error) {
+                fail('IO', 'Read failed: ' + file.error);
+            }
+        } finally {
+            if (!file.close()) {
+                fail('IO', 'Cannot close ' + file.fsName);
+            }
+        }
+        return result;
+    }
+
+    // 親フォルダーから順に作成し、作成結果を確認する。
+    function ensureFolder(folder) {
+        if (folder.exists) {
+            return;
+        }
+        if (folder.parent && folder.parent.fsName !== folder.fsName) {
+            ensureFolder(folder.parent);
+        }
+        if (!folder.create()) {
+            fail(
+                'IO',
+                'Cannot create folder ' + folder.fsName + ': ' + folder.error
+            );
+        }
+    }
+
+    // 省略時は空のオプションを返し、指定時は未知の属性を検出する。
+    function options(value, allowed) {
+        if (typeof value === 'undefined') {
+            return {};
+        }
+        object(value, 'options');
+        keys(value, allowed, 'options');
+        return value;
+    }
+
+    // 同一FFXを再利用し、不一致なら検証済みの一時ファイルで置き換える。
+    function writeFFX(data, outputDirectory, settings) {
+        settings = options(settings, {
+            fileName: 1
+        });
+        var definition = normalise(data),
+            bytes = encode(definition),
+            directory,
+            fileName,
+            target,
+            temporaryFile,
+            backupFile,
+            oldPath;
+        if (typeof File === 'undefined' || typeof Folder === 'undefined') {
+            fail('HOST', 'ExtendScript File and Folder are required');
+        }
+        if (!outputDirectory) {
+            fail('INPUT', 'outputDirectory is required');
+        }
+        directory =
+            outputDirectory instanceof Folder
+                ? outputDirectory
+                : new Folder(outputDirectory);
+        fileName =
+            typeof settings.fileName === 'undefined'
+                ? definition.matchName.replace('Pseudo/', '') + '.ffx'
+                : text(settings.fileName, 'options.fileName');
+        if (
+            !/\.ffx$/i.test(fileName) ||
+            /[<>:"\/\\|?*\x00-\x1f]/.test(fileName) ||
+            /[. ]$/.test(fileName) ||
+            /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])\./i.test(fileName)
+        ) {
+            fail('INPUT', 'Expected a safe .ffx basename', 'options.fileName');
+        }
+        ensureFolder(directory);
+        target = new File(directory.fsName + '/' + fileName);
+
+        // 既存FFXの全バイトが一致すれば再利用
+        if (target.exists && read(target) === bytes) {
+            return {
+                file: target,
+                matchName: definition.matchName,
+                reused: true
+            };
+        }
+        var token =
+            String(new Date().getTime()) +
+            '-' +
+            Math.floor(Math.random() * 1000000000);
+        temporaryFile = new File(directory.fsName + '/.pfx-' + token + '.tmp');
+        backupFile = new File(directory.fsName + '/.pfx-' + token + '.bak');
+        try {
+            // 一時ファイルへの書込み
+            temporaryFile.encoding = 'BINARY';
+            if (!temporaryFile.open('w')) {
+                fail(
+                    'IO',
+                    'Cannot open temporary file: ' + temporaryFile.error
+                );
+            }
+            try {
+                if (!temporaryFile.write(bytes) || temporaryFile.error) {
+                    fail(
+                        'IO',
+                        'Cannot write temporary file: ' + temporaryFile.error
+                    );
+                }
+            } finally {
+                if (!temporaryFile.close()) {
+                    fail('IO', 'Cannot close temporary file');
+                }
+            }
+
+            // 書込み結果の検証後に既存ファイルを退避
+            if (read(temporaryFile) !== bytes) {
+                fail('IO', 'Temporary file verification failed');
+            }
+            oldPath = target.fsName;
+            if (target.exists && !target.rename(backupFile.name)) {
+                fail('IO', 'Cannot back up existing file: ' + target.error);
+            }
+
+            // 置換に失敗した場合は既存ファイルを復元
+            if (!temporaryFile.rename(fileName)) {
+                if (backupFile.exists && !backupFile.rename(fileName)) {
+                    fail(
+                        'IO',
+                        'Replacement failed; original retained at ' +
+                            backupFile.fsName
+                    );
+                }
+                fail('IO', 'Cannot replace output file');
+            }
+
+            // 置換後の全バイトを検証して退避ファイルを削除
+            target = new File(oldPath);
+            if (read(target) !== bytes) {
+                fail(
+                    'IO',
+                    'Output verification failed; backup retained at ' +
+                        backupFile.fsName
+                );
+            }
+            if (backupFile.exists && !backupFile.remove()) {
+                fail(
+                    'IO',
+                    'Output written; cannot remove backup ' + backupFile.fsName
+                );
+            }
+            return {
+                file: target,
+                matchName: definition.matchName,
+                reused: false
+            };
+        } finally {
+            if (
+                temporaryFile.exists &&
+                /\.tmp$/.test(temporaryFile.name) &&
+                !temporaryFile.remove()
+            ) {
+                fail(
+                    'IO',
+                    'Cannot remove temporary file ' + temporaryFile.fsName
+                );
+            }
+        }
+    }
+
+    // 指定matchNameをAEへ追加できるか判定し、ホスト例外を分類する。
+    function canAddEffect(effectsProp, matchName) {
+        try {
+            return effectsProp.canAddProperty(matchName);
+        } catch (hostError) {
+            fail(
+                'APPLY',
+                'Cannot inspect the Effects group: ' + String(hostError)
+            );
+        }
+    }
+
+    // 未登録ならFFXで定義を登録し、指定Effectsへエフェクトを追加する。
+    function applyPseudoEffect(data, effectsProp, settings) {
+        settings = options(settings, {
+            outputDirectory: 1,
+            fileName: 1
+        });
+        var definition = normalise(data),
+            file,
+            temporaryComp,
+            temporaryLayer,
+            activeItem,
+            selectedLayers = [],
+            layerIndex,
+            project,
+            error,
+            result;
+        if (typeof app === 'undefined' || !app.project) {
+            fail('HOST', 'An open After Effects project is required');
+        }
+        project = app.project;
+        if (!effectsProp || effectsProp.matchName !== 'ADBE Effect Parade') {
+            fail(
+                'INPUT',
+                'Expected a layer Effects property group',
+                'effectsProp'
+            );
+        }
+        try {
+            if (
+                typeof effectsProp.canAddProperty !== 'function' &&
+                !effectsProp.canAddProperty
+            ) {
+                fail('INPUT', 'Invalid Effects property group');
+            }
+        } catch (caughtError) {
+            fail('INPUT', 'Invalid Effects property group');
+        }
+
+        // AEに未登録の場合だけFFXを生成・登録
+        if (!canAddEffect(effectsProp, definition.matchName)) {
+            file = writeFFX(
+                data,
+                settings.outputDirectory ||
+                    Folder.userData.fsName + '/PseudoFXForge',
+                typeof settings.fileName === 'undefined'
+                    ? undefined
+                    : {
+                          fileName: settings.fileName
+                      }
+            ).file;
+            try {
+                // 元の選択レイヤーを保存して選択解除
+                activeItem = project.activeItem;
+                if (activeItem && activeItem instanceof CompItem) {
+                    for (
+                        layerIndex = 1;
+                        layerIndex <= activeItem.numLayers;
+                        layerIndex++
+                    ) {
+                        if (activeItem.layer(layerIndex).selected) {
+                            selectedLayers.push(activeItem.layer(layerIndex));
+                            activeItem.layer(layerIndex).selected = false;
+                        }
+                    }
+                }
+
+                // 一時レイヤーだけにプリセットを適用
+                temporaryComp = project.items.addComp(
+                    'PseudoFXForge registration',
+                    100,
+                    100,
+                    1,
+                    1,
+                    24
+                );
+                temporaryLayer = temporaryComp.layers.addShape();
+                temporaryLayer.selected = true;
+                temporaryLayer.applyPreset(file);
+
+                // プリセット適用後の定義登録を確認
+                if (!effectsProp.canAddProperty(definition.matchName)) {
+                    fail(
+                        'REGISTER',
+                        'After Effects did not register ' + definition.matchName
+                    );
+                }
+            } catch (registrationError) {
+                error = registrationError;
+            } finally {
+                try {
+                    // 登録の成否にかかわらず一時コンポジションを削除
+                    if (temporaryComp) {
+                        temporaryComp.remove();
+                    }
+                } catch (cleanupError) {
+                    error = cleanupError;
+                }
+                for (
+                    layerIndex = 0;
+                    layerIndex < selectedLayers.length;
+                    layerIndex++
+                ) {
+                    try {
+                        // 元のレイヤー選択を復元
+                        selectedLayers[layerIndex].selected = true;
+                    } catch (selectionError) {
+                        error = selectionError;
+                    }
+                }
+                try {
+                    if (activeItem && activeItem instanceof CompItem) {
+                        // 元のコンポジションのビューアーを復元
+                        activeItem.openInViewer();
+                    }
+                } catch (viewerError) {
+                    error = viewerError;
+                }
+            }
+            if (error) {
+                fail('REGISTER', String(error));
+            }
+        }
+        try {
+            // 指定Effectsへ追加し、入力の表示名を設定
+            result = effectsProp.addProperty(definition.matchName);
+            if (!result) {
+                fail('APPLY', 'addProperty returned no effect');
+            }
+            result.name = definition.name;
+            return result;
+        } catch (applicationError) {
+            fail('APPLY', String(applicationError));
+        }
+    }
+    return {
+        version: VERSION,
+        normalise: normalise,
+        writeFFX: writeFFX,
+        applyPseudoEffect: applyPseudoEffect
+    };
+})();
+
+export var version = PseudoFXForge.version;
+export var normalise = PseudoFXForge.normalise;
+export var writeFFX = PseudoFXForge.writeFFX;
+export var applyPseudoEffect = PseudoFXForge.applyPseudoEffect;
+export default PseudoFXForge;
